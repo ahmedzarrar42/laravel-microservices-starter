@@ -1,0 +1,87 @@
+version: '3.8'
+services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: users_db
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  api-gateway:
+    image: php:8.3-cli
+    working_dir: /app
+    volumes:
+      - ./api-gateway-fresh:/app
+    ports:
+      - "8000:8000"
+    command: php artisan serve --host=0.0.0.0 --port=8000
+    environment:
+      USER_SERVICE_URL: http://host.docker.internal:8001/api
+      ORDER_SERVICE_URL: http://host.docker.internal:8002/api
+
+  user-service:
+    image: php:8.3-cli
+    working_dir: /app
+    volumes:
+      - ./user-service-fresh:/app
+    ports:
+      - "8001:8001"
+    command: php artisan serve --host=0.0.0.0 --port=8001
+    environment:
+      DB_HOST: mysql
+      DB_DATABASE: users_db
+      DB_USERNAME: root
+      DB_PASSWORD: secret
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      - mysql
+      - rabbitmq
+
+  order-service:
+    image: php:8.3-cli
+    working_dir: /app
+    volumes:
+      - ./order-service-fresh:/app
+    ports:
+      - "8002:8002"
+    command: php artisan serve --host=0.0.0.0 --port=8002
+    environment:
+      DB_HOST: mysql
+      DB_DATABASE: orders_db
+      DB_USERNAME: root
+      DB_PASSWORD: secret
+      RABBITMQ_HOST: rabbitmq
+      USER_SERVICE_URL: http://host.docker.internal:8001/api
+    depends_on:
+      - mysql
+      - rabbitmq
+
+  notification-service:
+    image: php:8.3-cli
+    working_dir: /app
+    volumes:
+      - ./notification-service-fresh:/app
+    ports:
+      - "8003:8003"
+    command: php artisan serve --host=0.0.0.0 --port=8003
+    environment:
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      - rabbitmq
+
+volumes:
+  mysql_data:
