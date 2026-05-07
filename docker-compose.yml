@@ -1,0 +1,168 @@
+version: '3.8'
+
+services:
+
+  # ─── Infrastructure ───────────────────────────────────────────
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: users_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Services ─────────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+    environment:
+      - USER_SERVICE_URL=http://user-service/api
+      - ORDER_SERVICE_URL=http://order-service/api
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+      - user-service
+      - order-service
+    volumes:
+      - ./api-gateway:/var/www/html
+
+  user-service:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    environment:
+      - DB_HOST=mysql
+      - DB_DATABASE=users_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - RABBITMQ_HOST=rabbitmq
+      - REDIS_HOST=redis
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./user-service:/var/www/html
+
+  user-service-worker:
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    command: php artisan queue:work rabbitmq --sleep=3 --tries=3
+    environment:
+      - DB_HOST=mysql
+      - DB_DATABASE=users_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - user-service
+      - rabbitmq
+
+  order-service:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    environment:
+      - DB_HOST=mysql
+      - DB_DATABASE=orders_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - RABBITMQ_HOST=rabbitmq
+      - USER_SERVICE_URL=http://user-service/api
+      - REDIS_HOST=redis
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./order-service:/var/www/html
+
+  order-service-worker:
+    build:
+      context: ./order-service
+      dockerfile: Dockerfile
+    command: php artisan queue:work rabbitmq --sleep=3 --tries=3
+    environment:
+      - DB_HOST=mysql
+      - DB_DATABASE=orders_db
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - order-service
+      - rabbitmq
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - MAIL_HOST=mailpit
+      - MAIL_PORT=1025
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./notification-service:/var/www/html
+
+  notification-service-worker:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    command: php artisan queue:work rabbitmq --sleep=3 --tries=3
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      - notification-service
+      - rabbitmq
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"   # Web UI
+      - "1025:1025"   # SMTP
+
+volumes:
+  mysql_data:
+  redis_data:
+  rabbitmq_data:
